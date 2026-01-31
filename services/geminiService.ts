@@ -1,9 +1,9 @@
 
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import * as pdfjsLib from 'pdfjs-dist';
-import { 
-    ComplianceStatus, RiskRating, PromotionAnalysis, AgentResult, ClaimVerification, ReadabilityMetrics, 
-    ARValidation, DisclosureCheck, StrategyPrompt, EscalationRoute, ApprovalRecord, QESSignature, 
+import {
+    ComplianceStatus, RiskRating, PromotionAnalysis, AgentResult, ClaimVerification, ReadabilityMetrics,
+    ARValidation, DisclosureCheck, StrategyPrompt, EscalationRoute, ApprovalRecord, QESSignature,
     HashChainEntry, FCAStatusResponse, DocumentAIResult, Token, ComplianceState, IndividualValidation,
     PromotionDocument, ControlTestDocument, AuditTrailDocument, ARValidationDocument, ApprovalDocument, PermissionViolation,
     ControlledFunction, PrincipalNetworkScan, AppointedRepresentative, PageData, ChatRequestDto, ExpertType
@@ -19,9 +19,9 @@ if (typeof window !== 'undefined' && !pdfjs.GlobalWorkerOptions.workerSrc) {
 }
 
 const getClient = () => {
-  const apiKey = process.env.API_KEY;
-  if (!apiKey) throw new Error("API Key not found");
-  return new GoogleGenAI({ apiKey });
+    const apiKey = process.env.API_KEY;
+    if (!apiKey) throw new Error("API Key not found");
+    return new GoogleGenerativeAI({ apiKey });
 };
 
 // --- Intelligent Caching (Simulating Redis) ---
@@ -64,48 +64,71 @@ const canonicalStringify = (obj: any): string => {
 };
 
 export const generateSha256 = async (content: string): Promise<string> => {
-  const msgBuffer = new TextEncoder().encode(content);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    const msgBuffer = new TextEncoder().encode(content);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 };
 
 export const generateHmacSha256 = async (key: string, data: string): Promise<string> => {
-  const encoder = new TextEncoder();
-  const keyData = encoder.encode(key);
-  const cryptoKey = await crypto.subtle.importKey(
-    'raw', keyData, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
-  );
-  const signature = await crypto.subtle.sign('HMAC', cryptoKey, encoder.encode(data));
-  return Array.from(new Uint8Array(signature)).map(b => b.toString(16).padStart(2, '0')).join('');
+    const encoder = new TextEncoder();
+    const keyData = encoder.encode(key);
+    const cryptoKey = await crypto.subtle.importKey(
+        'raw', keyData, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+    );
+    const signature = await crypto.subtle.sign('HMAC', cryptoKey, encoder.encode(data));
+    return Array.from(new Uint8Array(signature)).map(b => b.toString(16).padStart(2, '0')).join('');
 };
 
 export const generateAuditHash = async (content: string): Promise<string> => {
-  return generateSha256(content + Date.now().toString());
+    return generateSha256(content + Date.now().toString());
 };
 
 // --- Immutable Audit Log Service (SYSC 9 Compliant) ---
 class ImmutableAuditLogService {
-    private secretKey = "COMPLIA_SECRET_MASTER_KEY_2025"; // In prod, this comes from KMS
-    
+    // CRITICAL: Never hardcode secrets in production
+    // Keys are fetched from secure environment configuration
+    private getSecretKey(): string {
+        // In test environment or when config not available, use a test key
+        if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'test') {
+            return '0'.repeat(64); // Test key
+        }
+
+        // Import config dynamically to avoid circular dependencies
+        try {
+            // This will be populated by config/env.ts after environment is loaded
+            const key = (globalThis as any).__AUDIT_SECRET_KEY__;
+            if (!key) {
+                throw new Error(
+                    'AUDIT_SECRET_KEY not configured. ' +
+                    'Please ensure .env.local is set up correctly.'
+                );
+            }
+            return key;
+        } catch (error) {
+            console.error('Failed to load audit secret key:', error);
+            throw new Error('Audit system not properly configured');
+        }
+    }
+
     // Equivalent to Python's record_decision
     async logAction(
-        promotionId: string, 
+        promotionId: string,
         action: string, // maps to agent_id 
         actor: string, // maps to approver_id
         payload: any
     ): Promise<AuditTrailDocument> {
         const timestamp = new Date().toISOString();
-        
+
         // Fetch full history to determine chain linkage
         const history = FirestoreService.auditTrails.list();
         // Sort ascending by sequence to find the true last block
         history.sort((a, b) => a.sequence_number - b.sequence_number);
-        
+
         const lastEntry = history.length > 0 ? history[history.length - 1] : null;
         const previousHash = lastEntry ? lastEntry.hash : "GENESIS";
         const sequenceNumber = (lastEntry?.sequence_number || 0) + 1;
-        
+
         // Create Entry Object (Structure matched to Python logic)
         // We do NOT hash the hash field itself, obviously.
         const entryData = {
@@ -117,13 +140,13 @@ class ImmutableAuditLogService {
             sequence_number: sequenceNumber,
             doc_id: promotionId // Added for context
         };
-        
+
         // Canonical String for HMAC
         const canonicalString = canonicalStringify(entryData);
-        
-        // Generate HMAC-SHA256
-        const entryHash = await generateHmacSha256(this.secretKey, canonicalString);
-        
+
+        // Generate HMAC-SHA256 with environment-based secret
+        const entryHash = await generateHmacSha256(this.getSecretKey(), canonicalString);
+
         const document: AuditTrailDocument = {
             id: `LOG-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
             sequence_number: sequenceNumber,
@@ -136,7 +159,7 @@ class ImmutableAuditLogService {
             payload_snapshot: JSON.stringify(payload),
             verification_status: 'VERIFIED'
         };
-        
+
         FirestoreService.auditTrails.log(document);
         return document;
     }
@@ -148,7 +171,7 @@ class ImmutableAuditLogService {
 
         for (let i = 0; i < history.length; i++) {
             const entry = history[i];
-            
+
             // Reconstruct the object used for hashing
             const checkEntry = {
                 timestamp: entry.timestamp,
@@ -161,7 +184,7 @@ class ImmutableAuditLogService {
             };
 
             const canonicalCheck = canonicalStringify(checkEntry);
-            const calculatedHash = await generateHmacSha256(this.secretKey, canonicalCheck);
+            const calculatedHash = await generateHmacSha256(this.getSecretKey(), canonicalCheck);
 
             // 1. Check Hash Integrity
             if (calculatedHash !== entry.hash) {
@@ -178,7 +201,7 @@ class ImmutableAuditLogService {
                 }
             } else {
                 if (entry.previous_hash !== "GENESIS") {
-                     return { valid: false, brokenSequence: entry.sequence_number, count: history.length };
+                    return { valid: false, brokenSequence: entry.sequence_number, count: history.length };
                 }
             }
         }
@@ -193,39 +216,39 @@ export const auditService = new ImmutableAuditLogService();
 class FCARegisterClient {
     private readonly FIRM_URL = "https://register.fca.org.uk/cgi-bin/firm_check.cgi";
     private readonly INDIVIDUALS_URL = "https://register.fca.org.uk/services/V0.1/Individuals";
-    
+
     // Simulate fetching from real endpoint with Permission Scopes
     async checkARStatus(firmReferenceNumber: string): Promise<FCAStatusResponse> {
         // Simulation Logic replacing the mock:
         await new Promise(resolve => setTimeout(resolve, 600)); // Network Latency
-        
+
         const mockRegistry: Record<string, any> = {
-            "712934": { 
-                name: "Principal Investment Management Ltd", 
+            "712934": {
+                name: "Principal Investment Management Ltd",
                 status: "Authorised",
                 permissions: ["advising-on-investments", "arranging-deals-in-investments"], // Standard AR (No Managing)
                 lastUpdate: "2023-10-20"
             },
-            "123456": { 
-                name: "RiskAdvisors LLP", 
+            "123456": {
+                name: "RiskAdvisors LLP",
                 status: "Suspended",
                 permissions: ["advising-on-investments"],
                 lastUpdate: "2023-09-01"
             },
-            "999999": { 
-                name: "Unknown Entity", 
+            "999999": {
+                name: "Unknown Entity",
                 status: "Not Found",
                 permissions: [],
                 lastUpdate: null
             },
-            "888888": { 
-                name: "Crypto Futures Trading", 
+            "888888": {
+                name: "Crypto Futures Trading",
                 status: "De-authorised",
                 permissions: [],
                 lastUpdate: "2023-08-15"
             },
-            "555555": { 
-                name: "Example Wealth Planning", 
+            "555555": {
+                name: "Example Wealth Planning",
                 status: "Appointed Representative",
                 permissions: ["advising-on-investments"],
                 lastUpdate: "2023-11-01"
@@ -235,7 +258,7 @@ class FCARegisterClient {
         const record = mockRegistry[firmReferenceNumber];
         const status = record ? record.status : "Not Found";
         const isValid = status === "Authorised" || status === "Appointed Representative";
-        
+
         return {
             frn: firmReferenceNumber,
             firmName: record ? record.name : "Unknown",
@@ -324,7 +347,7 @@ class FCARegisterClient {
         let data: any = { CurrentAppointedRepresentatives: [], PreviousAppointedRepresentatives: [] };
 
         if (principalFrn === "712934") { // The main firm in our mock
-             data = {
+            data = {
                 "CurrentAppointedRepresentatives": [
                     { "FRN": "555555", "Name": "Example Wealth Planning", "Effective Date": "2021-05-20", "Record SubType": "Full", "Tied Agent": "false", "Principal FRN": "712934" },
                     { "FRN": "888888", "Name": "Crypto Futures Trading", "Effective Date": "2022-01-10", "Record SubType": "Introducer", "Tied Agent": "false", "Principal FRN": "712934" } // Listed for discovery test
@@ -332,9 +355,9 @@ class FCARegisterClient {
                 "PreviousAppointedRepresentatives": [
                     { "FRN": "123456", "Name": "RiskAdvisors LLP", "Effective Date": "2019-01-01", "Termination Date": "2023-09-01", "Record SubType": "Full", "Principal FRN": "712934" }
                 ]
-             };
+            };
         } else if (principalFrn === "999001") { // Example Data
-             data = {
+            data = {
                 "CurrentAppointedRepresentatives": [
                     { "FRN": "999060", "Name": "AR Firm 3", "Effective Date": "03/03/2015", "Record SubType": "Full", "Principal FRN": "999001" },
                     { "FRN": "999008", "Name": "AR Firm 4", "Effective Date": "03/03/2015", "Record SubType": "Full", "Principal FRN": "999001" }
@@ -342,7 +365,7 @@ class FCARegisterClient {
                 "PreviousAppointedRepresentatives": [
                     { "FRN": "999054", "Name": "AR Firm 1", "Effective Date": "03/03/2015", "Termination Date": "06/04/2021", "Record SubType": "Full", "Principal FRN": "999001" }
                 ]
-             };
+            };
         }
 
         const mapAR = (raw: any, status: 'Current' | 'Previous'): AppointedRepresentative => ({
@@ -373,7 +396,7 @@ class FCARegisterClient {
 
         // Mock Database of SMFs/Individuals matching API structure
         const mockIndividuals: Record<string, any> = {
-            "JOB01749": { 
+            "JOB01749": {
                 "Details": {
                     "Status": "Certified/assessed by firm",
                     "IRN": "JOB01749",
@@ -384,7 +407,7 @@ class FCARegisterClient {
                     "Location 1": "City of London"
                 }
             },
-            "JXB12345": { 
+            "JXB12345": {
                 "Details": {
                     "Status": "Certified/assessed by firm",
                     "IRN": "JXB12345",
@@ -395,7 +418,7 @@ class FCARegisterClient {
                     "Location 1": "Canary Wharf"
                 }
             },
-             "JXD01375": { 
+            "JXD01375": {
                 "Details": {
                     "Status": "Certified/assessed by firm",
                     "IRN": "JXD01375",
@@ -406,7 +429,7 @@ class FCARegisterClient {
                     "Location 1": "City of Edinburgh"
                 }
             },
-            "PXM67890": { 
+            "PXM67890": {
                 "Details": {
                     "Status": "Certified/assessed by firm",
                     "IRN": "PXM67890",
@@ -418,33 +441,33 @@ class FCARegisterClient {
                 }
             },
             "SUS00000": {
-                 "Details": {
+                "Details": {
                     "Status": "Suspended",
                     "IRN": "SUS00000",
                     "Full Name": "Suspended Banker"
-                 },
-                 "Workplace Location 1": {
+                },
+                "Workplace Location 1": {
                     "Firm Name": "RiskAdvisors LLP",
                     "Location 1": "London"
-                 }
+                }
             },
             "INA11111": {
-                 "Details": {
+                "Details": {
                     "Status": "Inactive",
                     "IRN": "INA11111",
                     "Full Name": "Inactive Director"
-                 },
-                 "Workplace Location 1": {
+                },
+                "Workplace Location 1": {
                     "Firm Name": "Old Firm Ltd",
                     "Location 1": "Manchester"
-                 }
+                }
             }
         };
 
         const apiRecord = mockIndividuals[irn];
-        
+
         if (!apiRecord) {
-             return {
+            return {
                 irn,
                 name: "Unknown",
                 status: "Not Found",
@@ -476,7 +499,7 @@ export const loadPromotionAnalysis = async (promotionId: string): Promise<Promot
     if (!promoDoc) return null;
 
     const controlDoc = FirestoreService.controlTests.get(promotionId);
-    if (!controlDoc) return null; 
+    if (!controlDoc) return null;
 
     const approvalDoc = FirestoreService.approvals.getByPromotionId(promotionId);
 
@@ -534,18 +557,18 @@ export const loadPromotionAnalysis = async (promotionId: string): Promise<Promot
         type: promoDoc.type,
         submittedBy: promoDoc.submitted_by,
         submittedAt: promoDoc.submission_date,
-        executiveSummary: "Analysis loaded from secure storage.", 
-        regulatoryAnalysis: "Full regulatory breakdown available in Evidence Pack.", 
+        executiveSummary: "Analysis loaded from secure storage.",
+        regulatoryAnalysis: "Full regulatory breakdown available in Evidence Pack.",
         riskRating: promoDoc.risk_rating || RiskRating.MEDIUM,
         overallStatus: controlDoc.overall_status,
         agents: agents,
         claims: controlDoc.agent_2_consistency.claims,
-        auditHash: "REHYDRATED_HASH", 
+        auditHash: "REHYDRATED_HASH",
         readability: controlDoc.agent_4_text.metrics,
         arValidation: controlDoc.agent_5_ar_permissions.validation,
         disclosures: controlDoc.agent_6_disclosure.disclosures,
         approvalRecord: approvalRecord,
-        fullText: controlDoc.full_text 
+        fullText: controlDoc.full_text
     };
 };
 
@@ -558,7 +581,7 @@ export const validateARAuthorization = async (frn: string, promotionId: string =
     }
 
     console.log(`[Agent 5] Cache Miss. Fetching from FCA Register for FRN: ${frn}`);
-    
+
     // 2. Use Real Client Structure
     const fcaResponse = await fcaClient.checkARStatus(frn);
 
@@ -595,10 +618,10 @@ export const validateIndividualAuthorization = async (irn: string): Promise<Indi
 
     // 2. Fetch basic info
     const response = await fcaClient.checkIndividualStatus(irn);
-    
+
     // 3. Fetch Controlled Functions (Roles)
     const roles = await fcaClient.getControlledFunctions(irn);
-    
+
     // 4. Merge Data
     const fullResponse: IndividualValidation = {
         ...response,
@@ -608,7 +631,7 @@ export const validateIndividualAuthorization = async (irn: string): Promise<Indi
 
     // 5. Cache
     fcaCache.set(`ind:${irn}`, fullResponse);
-    
+
     return fullResponse;
 };
 
@@ -621,9 +644,9 @@ export const scanPrincipalNetwork = (principalFrn: string) => fcaClient.getAppoi
 
 // Helper: Detect bold (heuristic: font name contains 'Bold' or height > 0.9x average)
 const detectBold = (items: any[], avgHeight: number): boolean => {
-    const boldCount = items.filter(item => 
-      (item.fontName && item.fontName.toLowerCase().includes('bold')) || 
-      item.height > avgHeight * 1.1
+    const boldCount = items.filter(item =>
+        (item.fontName && item.fontName.toLowerCase().includes('bold')) ||
+        item.height > avgHeight * 1.1
     ).length;
     return boldCount / items.length > 0.5;
 };
@@ -642,11 +665,11 @@ function groupByYPosition(items: any[], threshold: number) {
     // Sort items by Y (descending for PDF bottom-up coords, so top items first)
     // pdfjs item.transform[5] is Y.
     const sorted = [...items].sort((a, b) => b.transform[5] - a.transform[5]);
-    
+
     const groups: any[] = [];
     let currentGroup: any[] = [];
     let currentY: number | null = null;
-    
+
     for (let item of sorted) {
         const y = item.transform[5];
         if (currentY === null || Math.abs(y - currentY) < threshold) {
@@ -669,12 +692,12 @@ function groupByYPosition(items: any[], threshold: number) {
 
 export const processPdfDocumentAI = async (file: File): Promise<DocumentAIResult> => {
     console.log(`[Option B] Processing PDF with Sliding-Window Spatial Context...`);
-    
+
     try {
         const arrayBuffer = await file.arrayBuffer();
         const loadingTask = pdfjs.getDocument({ data: arrayBuffer });
         const pdf = await loadingTask.promise;
-        
+
         let fullText = "";
         const pages: PageData[] = [];
         const timestamp = new Date().toISOString();
@@ -683,10 +706,10 @@ export const processPdfDocumentAI = async (file: File): Promise<DocumentAIResult
             const page = await pdf.getPage(i);
             const textContent = await page.getTextContent();
             const viewport = page.getViewport({ scale: 1.0 });
-            
+
             // Clean items
             const items = textContent.items.filter((item: any) => item.str && item.str.trim().length > 0);
-            
+
             // Option B: Group by Y
             const lineGroups = groupByYPosition(items, 6); // Threshold 6px
 
@@ -699,23 +722,23 @@ export const processPdfDocumentAI = async (file: File): Promise<DocumentAIResult
 
             lineGroups.forEach((group: any) => {
                 const lineStr = group.items.map((item: any) => item.str).join(' ');
-                
+
                 // Spatial Calculations
                 const xMin = Math.min(...group.items.map((item: any) => item.transform[4]));
                 const xMax = Math.max(...group.items.map((item: any) => item.transform[4] + item.width));
-                
+
                 // Better Y calculation
                 const yMin = Math.min(...group.items.map((item: any) => item.transform[5])); // Baseline usually
                 const yMax = Math.max(...group.items.map((item: any) => item.transform[5] + item.height)); // Top of char
 
                 const width = xMax - xMin;
                 const height = yMax - yMin;
-                
+
                 // Normalized Coordinates (0,0 is Top-Left for BoundingBox)
                 // PDF Y is bottom-up. viewport.height is total height.
                 // Top of box in PDF = yMax.
                 // Top of box in Screen = viewport.height - yMax.
-                
+
                 const normX = xMin / viewport.width;
                 const normY = (viewport.height - yMax) / viewport.height;
                 const normW = width / viewport.width;
@@ -727,7 +750,7 @@ export const processPdfDocumentAI = async (file: File): Promise<DocumentAIResult
                 // Use yMin (baseline) or yMax (top) for logical section inference. 
                 // Usually baseline Y (from bottom) is good enough for section logic.
                 const pdfYBaseline = group.y;
-                const topDownY = viewport.height - pdfYBaseline; 
+                const topDownY = viewport.height - pdfYBaseline;
                 const section = inferPageSection(topDownY, viewport.height, group.order);
 
                 pageTokens.push({
@@ -749,7 +772,7 @@ export const processPdfDocumentAI = async (file: File): Promise<DocumentAIResult
 
                 pageText += lineStr + "\n";
             });
-            
+
             fullText += pageText + "\n";
             pages.push({
                 pageNumber: i,
@@ -787,10 +810,10 @@ const fileToPart = async (file: File) => {
 
 export const streamChat = async function* (dto: ChatRequestDto) {
     const ai = getClient();
-    
+
     // Map ExpertType to System Instructions
     let systemInstruction = dto.systemInstructions || "You are the Complia Financial Promotion Agent (CFPA). You act as a Regulatory Board Advisor.";
-    
+
     switch (dto.expertType) {
         case ExpertType.REGULATORY:
             systemInstruction = "You are a Senior Regulatory Compliance Officer (UK FCA/PRA). Prioritize COBS 4 rules, PERG 8 guidance, and SM&CR accountability. Be formal and precise.";
@@ -812,7 +835,7 @@ export const streamChat = async function* (dto: ChatRequestDto) {
     }
 
     const parts: any[] = [{ text: dto.content }];
-    
+
     if (dto.attachments) {
         for (const file of dto.attachments) {
             const part = await fileToPart(file);
@@ -843,7 +866,7 @@ export const queryBoardAdvisor = async (query: string): Promise<string> => {
         content: query,
         expertType: ExpertType.REGULATORY
     };
-    
+
     let fullResponse = "";
     for await (const chunk of streamChat(dto)) {
         fullResponse += chunk;
@@ -872,7 +895,7 @@ export const runClassificationAgent = async (text: string): Promise<AgentResult>
             config: { responseMimeType: 'application/json' }
         });
         const json = JSON.parse(response.text || '{}');
-        
+
         return {
             id: 'AG-1',
             agentName: 'Agent 1: Classification',
@@ -883,11 +906,11 @@ export const runClassificationAgent = async (text: string): Promise<AgentResult>
         };
     } catch (e) {
         return {
-             id: 'AG-1',
-             agentName: 'Agent 1: Classification',
-             status: ComplianceStatus.REFER,
-             description: "Failed to classify content.",
-             timestamp: new Date().toISOString()
+            id: 'AG-1',
+            agentName: 'Agent 1: Classification',
+            status: ComplianceStatus.REFER,
+            description: "Failed to classify content.",
+            timestamp: new Date().toISOString()
         };
     }
 };
@@ -913,9 +936,9 @@ export const runDataConsistencyAgent = async (promoText: string, truthText: stri
 
     try {
         const response = await ai.models.generateContent({
-             model: 'gemini-3-pro-preview',
-             contents: prompt,
-             config: { responseMimeType: 'application/json' }
+            model: 'gemini-3-pro-preview',
+            contents: prompt,
+            config: { responseMimeType: 'application/json' }
         });
         const json = JSON.parse(response.text || '{}');
         const claims = json.claims || [];
@@ -947,62 +970,62 @@ export const runVisualAgent = async (text: string, ocrData?: DocumentAIResult): 
 
     // Use Option B Enhanced Spatial Data if available
     if (ocrData && ocrData.pages) {
-         let buriedRiskCount = 0;
-         let riskFound = false;
+        let buriedRiskCount = 0;
+        let riskFound = false;
 
-         ocrData.pages.forEach(page => {
-             page.tokens.forEach(token => {
-                 const lower = token.text.toLowerCase();
-                 // Look for key risk terms
-                 if (lower.includes("capital at risk") || lower.includes("value can go down") || lower.includes("past performance")) {
-                     riskFound = true;
-                     const score = (1.0 - token.boundingBox.y).toFixed(2); // Higher score = Higher up on page
-                     
-                     // Option B Logic: Check if it's in the footer or hidden
-                     let status = "PASS";
-                     if (token.layout?.section === 'footer' || token.boundingBox.y > 0.90) {
-                         status = "BURIED (Bottom 10%)";
-                         buriedRiskCount++;
-                     } else if (token.layout?.fontSize && token.layout.fontSize < 6) {
-                         status = "BURIED (Small Font)";
-                         buriedRiskCount++;
-                     }
+        ocrData.pages.forEach(page => {
+            page.tokens.forEach(token => {
+                const lower = token.text.toLowerCase();
+                // Look for key risk terms
+                if (lower.includes("capital at risk") || lower.includes("value can go down") || lower.includes("past performance")) {
+                    riskFound = true;
+                    const score = (1.0 - token.boundingBox.y).toFixed(2); // Higher score = Higher up on page
 
-                     details.push({
-                         page: page.pageNumber,
-                         text: token.text.substring(0, 30) + "...",
-                         yPos: token.boundingBox.y.toFixed(2),
-                         section: token.layout?.section || 'unknown',
-                         prominenceScore: score,
-                         verdict: status
-                     });
-                 }
-             });
-         });
+                    // Option B Logic: Check if it's in the footer or hidden
+                    let status = "PASS";
+                    if (token.layout?.section === 'footer' || token.boundingBox.y > 0.90) {
+                        status = "BURIED (Bottom 10%)";
+                        buriedRiskCount++;
+                    } else if (token.layout?.fontSize && token.layout.fontSize < 6) {
+                        status = "BURIED (Small Font)";
+                        buriedRiskCount++;
+                    }
 
-         if (!riskFound) {
-             isFail = true;
-             verdict = "MISSING";
-         } else if (buriedRiskCount > 0) {
-             isFail = true;
-             verdict = "BURIED";
-         } else {
-             verdict = "PASS";
-         }
+                    details.push({
+                        page: page.pageNumber,
+                        text: token.text.substring(0, 30) + "...",
+                        yPos: token.boundingBox.y.toFixed(2),
+                        section: token.layout?.section || 'unknown',
+                        prominenceScore: score,
+                        verdict: status
+                    });
+                }
+            });
+        });
+
+        if (!riskFound) {
+            isFail = true;
+            verdict = "MISSING";
+        } else if (buriedRiskCount > 0) {
+            isFail = true;
+            verdict = "BURIED";
+        } else {
+            verdict = "PASS";
+        }
 
     } else {
         // Text only fallback (Degraded mode)
         const hasRiskWarning = text.toLowerCase().includes("capital at risk") || text.toLowerCase().includes("value can go down");
         if (hasRiskWarning) {
-             prominenceScore = 0.8;
-             verdict = "PRESENT (Text-Only)";
+            prominenceScore = 0.8;
+            verdict = "PRESENT (Text-Only)";
         } else {
-             prominenceScore = 0;
-             verdict = "MISSING";
-             isFail = true;
+            prominenceScore = 0;
+            verdict = "MISSING";
+            isFail = true;
         }
     }
-    
+
     return {
         id: 'AG-3',
         agentName: 'Agent 3: Visual Prominence',
@@ -1036,9 +1059,9 @@ export const runReadabilityAgent = async (text: string): Promise<{ agent: AgentR
 
     try {
         const response = await ai.models.generateContent({
-             model: 'gemini-3-flash-preview',
-             contents: prompt,
-             config: { responseMimeType: 'application/json' }
+            model: 'gemini-3-flash-preview',
+            contents: prompt,
+            config: { responseMimeType: 'application/json' }
         });
         const json = JSON.parse(response.text || '{}');
         const metrics: ReadabilityMetrics = {
@@ -1063,22 +1086,22 @@ export const runReadabilityAgent = async (text: string): Promise<{ agent: AgentR
             metrics
         };
     } catch (e) {
-         return {
+        return {
             agent: { id: 'AG-4', agentName: 'Agent 4: Readability', status: ComplianceStatus.REFER, description: "Analysis failed", timestamp: new Date().toISOString() },
             metrics: { score: 0, gradeLevel: "N/A", wordCount: 0, sentenceCount: 0, complexity: "Complex", prin2aCompliant: false, segments: [] }
-         };
+        };
     }
 };
 
 export const runARPermissionsAgent = async (text: string, arId: string, contextId?: string): Promise<{ agent: AgentResult; validation: ARValidation }> => {
     // 1. Check FCA Status
     const fcaStatus = await validateARAuthorization(arId, contextId || "UNKNOWN");
-    
+
     // 2. Check Permissions Scope (Permissions Check) - Mock simulation
     // If text contains "manage", "discretionary", "guarantee" and firm is AR, flag it.
     const prohibitedTerms = ["manage", "discretionary", "guaranteed returns"];
     const foundTerms = prohibitedTerms.filter(t => text.toLowerCase().includes(t));
-    
+
     const violations: PermissionViolation[] = foundTerms.map(t => ({
         keyword: t,
         rule: "PERG 8.12 - ARs cannot imply managing investments.",
@@ -1092,8 +1115,8 @@ export const runARPermissionsAgent = async (text: string, arId: string, contextI
             id: 'AG-5',
             agentName: 'Agent 5: AR Permissions',
             status: isValid ? ComplianceStatus.PASS : ComplianceStatus.FAIL,
-            description: fcaStatus.isValid 
-                ? (violations.length === 0 ? "AR Authorized and within scope." : "AR Authorized but Content exceeds permissions.") 
+            description: fcaStatus.isValid
+                ? (violations.length === 0 ? "AR Authorized and within scope." : "AR Authorized but Content exceeds permissions.")
                 : "AR Status Invalid (Suspended/De-authorized).",
             timestamp: new Date().toISOString()
         },
@@ -1157,11 +1180,11 @@ export const runStrategyHelper = (status: ComplianceStatus, risk: RiskRating, fa
 };
 
 export const analyzePromotionContent = async (
-    promoText: string, 
-    truthText: string, 
+    promoText: string,
+    truthText: string,
     metadata: { type: string, audience: string, submitter: string, arId: string, ocrData?: DocumentAIResult }
 ): Promise<PromotionAnalysis> => {
-    
+
     // Parallel Execution of Agents
     const [ag1, ag2, ag4, ag5, ag6] = await Promise.all([
         runClassificationAgent(promoText),
@@ -1170,10 +1193,10 @@ export const analyzePromotionContent = async (
         runARPermissionsAgent(promoText, metadata.arId, `ANALYSIS-${Date.now()}`),
         runDisclosureCheckAgent(promoText)
     ]);
-    
+
     // Visual Agent usually needs OCR data or falls back to text
     const ag3 = await runVisualAgent(promoText, metadata.ocrData);
-    
+
     const agents = [ag1, ag2.agent, ag3, ag4.agent, ag5.agent, ag6.agent];
     const failures = agents.filter(a => a.status === ComplianceStatus.FAIL);
     const overallStatus = failures.length > 0 ? ComplianceStatus.FAIL : ComplianceStatus.PASS;
@@ -1210,7 +1233,7 @@ export const analyzePromotionContent = async (
         status: overallStatus === ComplianceStatus.PASS ? "Ready for Review" : "Rejected",
         ar_id: metadata.arId, submitted_by: metadata.submitter, firm_id: "FIRM-01", risk_rating: riskRating
     });
-    
+
     FirestoreService.controlTests.save({
         id: promoId,
         agent_1_classification: ag1,
@@ -1231,7 +1254,7 @@ export const processDigitalSignature = async (analysis: PromotionAnalysis, signe
     // 1. Create Approval Record
     const approvalId = `ENV-${Date.now()}`;
     const timestamp = new Date().toISOString();
-    
+
     // 2. Log to Audit Service (HMAC)
     const auditEntry = await auditService.logAction(analysis.id, 'QES_SIGN_OFF', signerName, {
         decision: 'APPROVE',

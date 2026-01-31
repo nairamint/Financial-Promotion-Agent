@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Layout } from './components/Layout';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { Analysis } from './pages/Analysis';
 import { AuditLog } from './pages/AuditLog';
 import { ARGovernance } from './pages/ARGovernance';
@@ -19,8 +20,8 @@ const App: React.FC = () => {
   const [activeId, setActiveId] = useState<string | undefined>(undefined);
 
   const handleNavigate = (page: string, id?: string) => {
-      setActivePage(page);
-      setActiveId(id);
+    setActivePage(page);
+    setActiveId(id);
   };
 
   const renderPage = () => {
@@ -57,9 +58,11 @@ const App: React.FC = () => {
   };
 
   return (
-    <Layout activePage={activePage} onNavigate={handleNavigate}>
-      {renderPage()}
-    </Layout>
+    <ErrorBoundary>
+      <Layout activePage={activePage} onNavigate={handleNavigate}>
+        {renderPage()}
+      </Layout>
+    </ErrorBoundary>
   );
 };
 
